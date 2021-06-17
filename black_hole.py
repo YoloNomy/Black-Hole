@@ -9,11 +9,11 @@ from numba import njit
 rs = 1
 
 @njit(cache=True)
-def euler_evolution(phi, u, dudphi, sg=1):
+def euler_evolution(phi, u, dudphi):
     dphi=1e-3
-    dudphi_new = dudphi + (3/2*rs*u**2 - u) * dphi * sg
-    u_new = u + dudphi_new * dphi * sg
-    phi_new = phi + dphi * sg
+    dudphi_new = dudphi + (3/2*rs*u**2 - u) * dphi
+    u_new = u + dudphi_new * dphi
+    phi_new = phi + dphi
     return phi_new, u_new, dudphi_new
 
 @njit(cache=True)
@@ -28,11 +28,11 @@ def init_sim(phi_0, r_0, alpha):
     dudphi_0 = u_0/np.tan(alpha_rad)
     return [u_0], [phi_0_rad + np.pi], [dudphi_0], alpha_rad
 
-def traj_sim(u, phi, dudphi, alpha_rad, dist_max = 10*rs):
+def traj_sim(u, phi, dudphi, dist_max = 10*rs):
     not_escape = True
     compt = 0
     while not_escape:
-        phi_new, u_new, dudphi_new = euler_evolution(phi[-1], u[-1], dudphi[-1], sg=np.sign(alpha_rad))
+        phi_new, u_new, dudphi_new = euler_evolution(phi[-1], u[-1], dudphi[-1])
         phi.append(phi_new)
         u.append(u_new)
         dudphi.append(dudphi_new)
@@ -53,8 +53,8 @@ def traj_sim(u, phi, dudphi, alpha_rad, dist_max = 10*rs):
 
 def launch_sim_2D(phi_0, r_0,  alpha, show=True, ax=None):
 
-    u_ini, phi_ini, dudphi_ini, alpha_rad = init_sim(phi_0, r_0, alpha)
-    u, phi, dudphi = traj_sim(u_ini, phi_ini, dudphi_ini, alpha_rad)
+    #u_ini, phi_ini, dudphi_ini, alpha_rad = init_sim(phi_0, r_0, alpha)
+    u, phi, dudphi = traj_sim([1/r_0], [phi_0], [1/(r_0 * np.tan(alpha))])
 
     x = 1/u * np.cos(phi)
     y = 1/u * np.sin(phi)
@@ -146,7 +146,6 @@ def launch_sim_3D(phi_0, r_0, alpha, theta, show=True, ax=None):
         ax.set_box_aspect([1,1,1])
         set_axes_equal(ax)
         plt.show()
-
 
 def plot_multi_traj_3D(r_0, alpha = 10, theta_min = 0, theta_max = 360, step=20):
     fig = plt.figure()
