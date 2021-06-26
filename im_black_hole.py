@@ -43,78 +43,27 @@ def rot_x(r_angle):
 
     return R
 
+def rot_vec_x(r_angle, x, y, z):
+    R = rot_x(r_angle)
+    new_x = R[0, 0] * x
+    new_y = R[1, 1] * y + R[1, 2] * z
+    new_z = R[2, 1] * y + R[2, 2] * z
+    return new_x, new_y, new_z
 
-def create_matrix(X_size, Y_size, img_res_x, img_res_y, interp):
-    X, Y = np.meshgrid(np.arange(0, X_size), np.arange(0, Y_size))
-
-    phi = X / img_res_x
-    theta = Y / img_res_y
-
+def sph2cart(phi, theta):
     x = np.sin(theta) * np.cos(phi)
     y = np.sin(theta) * np.sin(phi)
     z = np.cos(theta)
-
-    with np.errstate(all='ignore'):
-        beta = -np.arctan(z/y)
-
-    R1 = rot_x(beta)
-
-    new_x = R1[0, 0] * x
-    new_y = R1[1, 1] * y + R1[1, 2] * z
-    new_z = R1[2, 1] * y + R1[2, 2] * z
-
-    seen_angle = np.mod(np.arctan2(new_y, new_x), 2 * np.pi)
-
-    deviated_angle = np.zeros(seen_angle.shape)
-
-    deviated_angle[seen_angle < np.pi] = interp(seen_angle[seen_angle < np.pi])
-    deviated_angle[seen_angle >= np.pi] = 2 * np.pi - interp(2 * np.pi - seen_angle[seen_angle >= np.pi])
-
-    u = np.sin(np.pi / 2) * np.cos(deviated_angle)
-    v = np.sin(np.pi / 2) * np.sin(deviated_angle)
-    w = np.cos(np.pi / 2)
-
-    R2 = rot_x(-beta)
-
-    new_u = R2[0, 0] * u
-    new_v = R2[1, 1] * v + R2[1, 2] * w
-    new_w = R2[2, 1] * v + R2[2, 2] * w
-
-    new_phi =  np.mod(np.arctan2(new_v, new_u), 2 * np.pi)
-    new_theta = np.mod(np.arccos(new_w), np.pi)
-    new_phi[new_phi == 2 * np.pi] = 0
-    img_aft_hole_x = new_phi * img_res_x
-    img_aft_hole_y = new_theta * img_res_y
-
-    img_aft_hole_x[np.isnan(img_aft_hole_x)] = -1
-    img_aft_hole_y[np.isnan(img_aft_hole_y)] = -1
-
-    return np.array(img_aft_hole_x, dtype=int), np.array(img_aft_hole_y, dtype=int)
-
-def get_img(image, img_aft_hole_x, img_aft_hole_y, X_size, Y_size):
-        pixels = np.array(image)
-        pixels_aft_hole = np.array(image)
-
-        img_aft_hole_y[img_aft_hole_y >= Y_size] = -2  # locate pixels outside of the image
-        img_aft_hole_x[img_aft_hole_x >= X_size] = -2
-
-        pixels_aft_hole = pixels[img_aft_hole_y, img_aft_hole_x]  # apply the black hole deformation
-        pixels_aft_hole[img_aft_hole_x == -1] = [0, 0, 0]  # color the black hole in black
-        pixels_aft_hole[img_aft_hole_y == -2] = [255, 192, 203]  # color pixels outside
-        pixels_aft_hole[img_aft_hole_x == -2] = [255, 192, 203]
-        pixels_aft_hole.astype(np.uint8)
-
-        return Image.fromarray(pixels_aft_hole, 'RGB')
+    return x, y, z
 
 
-@njit(cache=True)
 def pol2cart(r, theta):
     x = r * np.cos(theta)
     y = r * np.sin(theta)
     return x, y
 
 class BlackHole:
-    def __init__(self, G = 1, M = 1/2, c = 1, dobs = 10, phi_obs = 0):
+    def __init__(self, G = 1, M = 1/2, c = 1, dobs = 10, phi_obs = 0, interp_res = 2e-2):
         self._G = G
         self._M = M
         self._c = c
@@ -139,13 +88,13 @@ class BlackHole:
     def dobs(self, val):
         if val > self.rs:
             self._dobs = val
-            self.compute_min_angle(1e-4)
+            self.compute_min_angle(1e-3)
         else:
             print(f"dobs must be larger than the Schwarchild Radius {self.rs}")
 
     @property
     def c(self):
-        return self.c
+        return self._c
 
     @c.setter
     def c(self, val):
@@ -180,9 +129,10 @@ class BlackHole:
         phi_new = phi + self._dphi
         return phi_new, u_new, dudphi_new
 
-    def _traj_sim(self, alpha, all_traj=False):
+    def _traj_sim(self, alpha, all_traj=False, alpha_rad = True):
         phi = np.radians(self.phi_obs)
-        alpha = np.radians(alpha)
+        if not alpha_rad:
+            alpha = np.radians(alpha)
         if alpha == 0:
             alpha = 0.0001
         u = 1 / self.dobs
@@ -190,8 +140,8 @@ class BlackHole:
         dont_stop = True
         compt = 0
         if all_traj:
-            phi_list = [phi]
-            r_list = [r0]
+            phi_list = [self.phi_obs]
+            r_list = [self.dobs]
 
         while dont_stop:
             phi_tmp, u_tmp, dudphi_tmp = self._euler_evolution(phi, u, dudphi)
@@ -205,7 +155,7 @@ class BlackHole:
                 dont_stop = False
                 if all_traj:
                     r_list[-1] = self.rs
-            elif abs(1/u_tmp) > 15 * self.rs:
+            elif abs(1 / u_tmp) > 15 * self.rs:
                 res = (phi_tmp, 1/u_tmp)
                 dont_stop = False
             elif compt > 1e6:
@@ -214,40 +164,53 @@ class BlackHole:
             compt += 1
             phi, u, dudphi = phi_tmp, u_tmp, dudphi_tmp
         if all_traj:
-            res = (phi_list, r_list)
+            res = (np.array(phi_list), np.array(r_list))
         return res
 
     def draw_hole(self, ax, dim):
         if dim == '2D':
-            ax.add_patch(plt.Circle((0,0), self.rs, color='k'))
+            ax.add_patch(plt.Circle((0,0), self.rs, color='k', zorder=3, transform=ax.transData._b))
         elif dim == '3D':
             plot_sphere(ax)
 
-    def traj_2D(self, alpha, show=True, ax=None):
-        phi, r = self._traj_sim(abs(alpha), all_traj = True)
-        x, y = pol2cart(r, phi)
-        if alpha < 0:
+    def traj_2D(self, alpha, show=True, ax=None, polar = False):
+        x, y = self._traj_sim(abs(alpha), all_traj = True, alpha_rad = False)
+        if not polar:
+            x, y = pol2cart(y, x)
+        if alpha < 0 and not polar:
             y *= -1
+        elif alpha < 0 and polar:
+            x *= -1
         if show:
-            fig, ax = plt.subplots()
+            projection = None
+            if polar:
+                projection = 'polar'
+            fig = plt.figure()
+            ax = fig.add_subplot(projection = projection)
 
         ax.plot(x, y, color='r')
 
         if show:
             self.draw_hole(ax, dim ='2D')
-            ax.axis('equal')
+            if not polar:
+                ax.axis('equal')
             plt.show()
 
-    def multi_traj_2D(self, alpha_min = 0, alpha_max = 50, step=1):
-        fig, ax = plt.subplots()
+    def multi_traj_2D(self, alpha_min = 0, alpha_max = 50, step=1, polar = False):
+        projection = None
+        if polar:
+            projection = 'polar'
+        fig = plt.figure()
+        ax = fig.add_subplot(projection = projection)
         for alpha in np.arange(alpha_min, alpha_max, step):
-            self.traj_2D(alpha = alpha, show = False, ax = ax)
+            self.traj_2D(alpha = alpha, show = False, ax = ax, polar = polar)
         self.draw_hole(ax, dim='2D')
-        ax.axis('equal')
+        if not polar:
+            ax.axis('equal')
         plt.show()
 
     def traj_3D(self, alpha, theta, show=True, ax=None):
-        phi, r = self._traj_sim(alpha, all_traj = True)
+        phi, r = self._traj_sim(alpha, all_traj = True, alpha_rad = False)
 
         if show:
             fig = plt.figure()
@@ -278,50 +241,50 @@ class BlackHole:
         set_axes_equal(ax)
         plt.show()
 
-    def min_angle_dicothomie(alpha1, alpha2, resolution):
+    def _min_angle_dicothomie(self, alpha1, alpha2, resolution):
         alpha = 0.5 * (alpha1 + alpha2)
-        res = run_sim(0, 1 / self.dobs, 1 / (self.dobs * np.tan(alpha)))
+        res = self._traj_sim(alpha)
         if abs(alpha2 - alpha1) < resolution:
             return alpha1, alpha2
         elif res == (0, 0):
-            return min_angle_dicothomie(alpha, alpha2, resolution, self.dobs)
+            return self._min_angle_dicothomie(alpha, alpha2, resolution)
         else:
-            return min_angle_dicothomie(alpha1, alpha, resolution, self.dobs)
+            return self._min_angle_dicothomie(alpha1, alpha, resolution)
 
-    def compute_min_angle(precision, verbose = False):
+    def compute_min_angle(self, precision, verbose = False):
         if verbose:
             print(f"Min angle computation with {precision} precision")
             stime = time.time()
 
         alpha1 = np.arctan(self.rs / self.dobs)
 
-        res1 = run_sim(0, 1/self.dobs, 1/(self.dobs * np.tan(alpha1)))
+        res1 = self._traj_sim(alpha1)
         alpha2 = 2 * alpha1
-        res2 = run_sim(0, 1/self.dobs, 1/(self.dobs * np.tan(alpha2)))
+        res2 = self._traj_sim(alpha2)
         step = 0.1
 
         while res1 != (0, 0):
             alpha1 -= step
-            res1 = run_sim(0,  1/self.dobs, 1/(self.dobs * np.tan(alpha1)))
+            res1 = self._traj_sim(alpha1)
         while res2 == (0,0):
             if res2 == (0, 0):
                 alpha2 += step
             else:
                 alpha2 -= step
-            res2 = run_sim(0,  1 / self.dobs, 1 / (self.dobs * np.tan(alpha2)))
+            res2 = self._traj_sim(alpha2)
 
-        a1, a2 = min_angle_dicothomie(alpha1, alpha2, precision)
+        a1, a2 = self._min_angle_dicothomie(alpha1, alpha2, precision)
         if verbose:
             print(f"Min angle computed in {time.time() - stime} seconds")
         self._alpha_min = a2
 
-    def _compute_traj_grid(alpha_min_res, grid_n_angle):
+    def _compute_traj_grid(self, alpha_min_res, grid_n_angle):
         self.compute_min_angle(alpha_min_res, verbose = True)
         alpha_grid = np.linspace(self.alpha_min, np.pi, grid_n_angle)
         seen_angle = []
         aft_hole_angle = []
         for alpha in alpha_grid:
-            res = run_sim(0,  1 / self.dobs, 1 / (self.dobs * np.tan(alpha)))
+            res = self._traj_sim(alpha)
             if res != (0, 0) and res != (-1, -1):
                 seen_angle.append(np.pi - alpha)
                 aft_hole_angle.append(res[0] + np.arcsin(self.dobs / res[1] * np.sin(res[0])))
@@ -331,12 +294,12 @@ class BlackHole:
         return interp1d(seen_angle, aft_hole_angle, bounds_error=False)
 
     @staticmethod
-    def _open_image(path, n_pix_x):
-        img = Image.open(image_path)
+    def _open_image(img_path, n_pix_x):
+        img = Image.open(img_path)
         img = img.convert('RGB')
 
         X_size = int(n_pix_x)
-        Y_size = int(image.size[1] * n_pix_x/image.size[0])
+        Y_size = int(img.size[1] * n_pix_x / img.size[0])
 
         X_size -= 1 * (X_size % 2 != 0)
         Y_size -= 1 * (Y_size % 2 != 0)
@@ -344,9 +307,61 @@ class BlackHole:
         img = img.resize((X_size, Y_size), Image.ANTIALIAS)
         return img
 
-    def image(image_path, n_pix_x = 5000, grid_n_angle = 150):
+    @staticmethod
+    def _create_matrix(X_size, Y_size, img_res_x, img_res_y, interp):
+        X, Y = np.meshgrid(np.arange(0, X_size), np.arange(0, Y_size))
+
+        phi = X / img_res_x
+        theta = Y / img_res_y
+
+        x, y, z = sph2cart(phi, theta)
+
+        with np.errstate(all='ignore'):
+            beta = -np.arctan(z/y)
+
+        new_x, new_y, new_z = rot_vec_x(beta, x, y, z)
+
+        seen_angle = np.mod(np.arctan2(new_y, new_x), 2 * np.pi)
+
+        deviated_angle = np.zeros(seen_angle.shape)
+
+        deviated_angle[seen_angle < np.pi] = interp(seen_angle[seen_angle < np.pi])
+        deviated_angle[seen_angle >= np.pi] = 2 * np.pi - interp(2 * np.pi - seen_angle[seen_angle >= np.pi])
+
+        u, v, w = sph2cart(deviated_angle, np.pi / 2)
+
+        new_u, new_v, new_w = rot_vec_x(-beta, u, v, w)
+
+        new_phi =  np.mod(np.arctan2(new_v, new_u), 2 * np.pi)
+        new_theta = np.mod(np.arccos(new_w), np.pi)
+        #new_phi[new_phi == 2 * np.pi] = 0
+
+        img_aft_hole_x = new_phi * img_res_x
+        img_aft_hole_y = new_theta * img_res_y
+
+        img_aft_hole_x[np.isnan(img_aft_hole_x)] = -1
+        img_aft_hole_y[np.isnan(img_aft_hole_y)] = -1
+
+        return np.array(img_aft_hole_x, dtype=int), np.array(img_aft_hole_y, dtype=int)
+
+    @staticmethod
+    def _get_img_aft_hole(image, img_aft_hole_x, img_aft_hole_y, X_size, Y_size):
+        pixels = np.array(image)
+        pixels_aft_hole = np.array(image)
+        img_aft_hole_y[img_aft_hole_y >= Y_size] = -2  # locate pixels outside of the image
+        img_aft_hole_x[img_aft_hole_x >= X_size] = -2
+
+        pixels_aft_hole = pixels[img_aft_hole_y, img_aft_hole_x]  # apply the black hole deformation
+        pixels_aft_hole[img_aft_hole_x == -1] = [0, 0, 0]  # color the black hole in black
+
+        pixels_aft_hole[img_aft_hole_y == -2] = [255, 192, 203]  # color pixels outside
+        pixels_aft_hole[img_aft_hole_x == -2] = [255, 192, 203]
+        pixels_aft_hole.astype(np.uint8)
+        return Image.fromarray(pixels_aft_hole, 'RGB')
+
+    def image(self, img_path, n_pix_x = 5000, grid_n_angle = 150):
         stime = time.time()
-        img  = self._open_image(path, n_pix_x)
+        img  = self._open_image(img_path, n_pix_x)
 
         # Give the delta angle by pixel
         img_res_x = img.size[0] / (2 * np.pi)
@@ -354,8 +369,8 @@ class BlackHole:
 
         interp = self._compute_traj_grid(1 / img_res_x, grid_n_angle)
 
-        img_aft_hole_x, img_aft_hole_y = create_matrix(X_size, Y_size, img_res_x, img_res_y, interp)
-        img_after_hole = get_img(image, img_aft_hole_x, img_aft_hole_y, X_size, Y_size)
+        img_aft_hole_x, img_aft_hole_y = self._create_matrix(img.size[0], img.size[1], img_res_x, img_res_y, interp)
+        img_after_hole = self._get_img_aft_hole(img, img_aft_hole_x, img_aft_hole_y, img.size[0], img.size[1])
 
         print(f"Image computed in {time.time()-stime} s")
         plt.figure()
