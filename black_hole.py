@@ -702,7 +702,7 @@ class BlackHole:
         grid_n_angle : int
             Number of points in the interpolation.
         """
-        
+
         stime = time.time()
         img  = self._open_image(img_path, n_pix_x)
 
@@ -714,4 +714,5 @@ class BlackHole:
         print(f"Image computed in {time.time()-stime} s")
         plt.figure()
         plt.imshow(img_after_hole)
+        plt.axis('off')
         plt.show()
